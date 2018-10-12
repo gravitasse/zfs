@@ -1685,6 +1685,9 @@ handle_set_wce_iokit(struct ldi_handle *lhp, int *wce)
 		result = device->setWriteCacheState(value);
 	}
 
+	if (device != NULL)
+		device->release();
+
 	/* Set error and wce to return */
 	if (result != kIOReturnSuccess) {
 		//dprintf("%s couldn't set write cache %d\n",
@@ -1876,6 +1879,55 @@ handle_is_solidstate_iokit(struct ldi_handle *lhp, int *isssd)
 	LH_MEDIA(lhp)->release();
 
 	return (0);
+}
+
+int
+handle_unmap_iokit(struct ldi_handle *lhp,
+    dkioc_free_list_t *dkm)
+{
+	int error = 0;
+
+	if (!lhp || !dkm) {
+		return (EINVAL);
+	}
+
+	if (dkm->dfl_num_exts == 0) return (0);
+
+	/* Validate IOMedia */
+	if (!OSDynamicCast(IOMedia, LH_MEDIA(lhp))) {
+		dprintf("%s invalid IOKit handle\n", __func__);
+		return (ENODEV);
+	}
+
+	LH_MEDIA(lhp)->retain();
+
+	/* We need to convert illumos' dkioc_free_list_t to dk_unmap_t */
+	IOStorageExtent *extents;
+	extents = IONew(IOStorageExtent, dkm->dfl_num_exts);
+	for (int i = 0; i < dkm->dfl_num_exts; i++) {
+		extents[i].byteStart = dkm->dfl_exts[i].dfle_start;
+		extents[i].byteCount = dkm->dfl_exts[i].dfle_length;
+	}
+	/* dkm->dfl_flags vs IOStorageUnmapOptions
+	 * #define DF_WAIT_SYNC 0x00000001 / * Wait for full write-out of free. * /
+	 * IOStorageUnmapOptions is only 0
+	 */
+
+	printf("%s: %llu extent(s)\n", __func__,dkm->dfl_num_exts);
+
+	/* issue unmap */
+	error = LH_MEDIA(lhp)->unmap(LH_CLIENT(lhp),
+		extents, dkm->dfl_num_exts, 0);
+
+	if (error != 0) {
+		printf("%s unmap: 0x%x\n", __func__, error);
+		error = ENOTSUP; /* As expected in vdev_disk.c DKIOCFREE */
+	}
+
+	IODelete(extents, IOStorageExtent, dkm->dfl_num_exts);
+	LH_MEDIA(lhp)->release();
+
+	return (error);
 }
 
 } /* extern "C" */
