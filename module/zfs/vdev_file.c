@@ -289,7 +289,6 @@ vdev_file_io_start(zio_t *zio)
 		{
 			const dkioc_free_list_t *dfl = zio->io_dfl;
 
-			ASSERT(dfl != NULL);
 			if (!zfs_trim)
 				break;
 			for (int i = 0; i < dfl->dfl_num_exts; i++) {
@@ -349,8 +348,8 @@ vdev_ops_t vdev_file_ops = {
 	.vdev_op_remap =	NULL,
 	.vdev_op_xlate =	vdev_default_xlate,
 	.vdev_op_trim =		NULL,
-	.vdev_op_type =		VDEV_TYPE_FILE,	/* name of this vdev type */
-	.vdev_op_leaf =		B_TRUE		/* leaf vdev */
+	.vdev_op_type =		VDEV_TYPE_FILE,
+	.vdev_op_leaf =		B_TRUE
 };
 
 void
@@ -386,8 +385,8 @@ vdev_ops_t vdev_disk_ops = {
 	.vdev_op_remap =	NULL,
 	.vdev_op_xlate =	vdev_default_xlate,
 	.vdev_op_trim =		NULL,
-	.vdev_op_type =		VDEV_TYPE_DISK,	/* name of this vdev type */
-	.vdev_op_leaf =		B_TRUE		/* leaf vdev */
+	.vdev_op_type =		VDEV_TYPE_DISK,
+	.vdev_op_leaf =		B_TRUE
 };
 
 #endif

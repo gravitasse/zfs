@@ -865,7 +865,8 @@ zio_destroy(zio_t *zio)
 		mutex_enter(&vd->vdev_trim_zios_lock);
 		ASSERT(vd->vdev_trim_zios != 0);
 		vd->vdev_trim_zios--;
-		cv_broadcast(&vd->vdev_trim_zios_cv);
+		if (vd->vdev_trim_zios == 0)
+			cv_broadcast(&vd->vdev_trim_zios_cv);
 		mutex_exit(&vd->vdev_trim_zios_lock);
 	}
 	metaslab_trace_fini(&zio->io_alloc_list);
@@ -3583,7 +3584,7 @@ zio_alloc_zil(spa_t *spa, objset_t *os, uint64_t txg, blkptr_t *new_bp,
  *	we want to skip doing the auto trims, because they hold up the manual
  *	trim unnecessarily. Manual trim processes all empty space anyway.
  * 2) If the autotrim property of the pool is flipped to off, usually due to
- *	performance reasons, we want to stop trying to do autotrims/
+ *	performance reasons, we want to stop trying to do autotrims.
  * 3) If a manual trim shutdown was requested, immediately terminate them.
  * 4) If a pool vdev reconfiguration is imminent, we must discard all queued
  *	up trims to let it proceed as quickly as possible.
@@ -3914,9 +3915,12 @@ zio_vdev_io_assess(zio_t *zio)
 	 * that we don't bother with it in the future.
 	 */
 	if ((zio->io_error == ENOTSUP || zio->io_error == ENOTTY) &&
-	    zio->io_type == ZIO_TYPE_IOCTL &&
-	    zio->io_cmd == DKIOCFLUSHWRITECACHE && vd != NULL)
-		vd->vdev_nowritecache = B_TRUE;
+	    zio->io_type == ZIO_TYPE_IOCTL && vd != NULL) {
+		if (zio->io_cmd == DKIOCFLUSHWRITECACHE)
+			vd->vdev_nowritecache = B_TRUE;
+		if (zio->io_cmd == DKIOCFREE)
+			vd->vdev_notrim = B_TRUE;
+	}
 
 	if (zio->io_error)
 		zio->io_pipeline = ZIO_INTERLOCK_PIPELINE;

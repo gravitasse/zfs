@@ -92,7 +92,6 @@ void range_tree_destroy(range_tree_t *rt);
 boolean_t range_tree_contains(range_tree_t *rt, uint64_t start, uint64_t size);
 boolean_t range_tree_contains_part(range_tree_t *rt, uint64_t start,
     uint64_t size);
-uint64_t range_tree_find_gap(range_tree_t *rt, uint64_t start, uint64_t size);
 range_seg_t *range_tree_find(range_tree_t *rt, uint64_t start, uint64_t size);
 void range_tree_resize_segment(range_tree_t *rt, range_seg_t *rs,
     uint64_t newstart, uint64_t newsize);

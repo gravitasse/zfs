@@ -1874,18 +1874,6 @@ spa_deadman_synctime(spa_t *spa)
 	return (spa->spa_deadman_synctime);
 }
 
-spa_force_trim_t
-spa_get_force_trim(spa_t *spa)
-{
-	return (spa->spa_force_trim);
-}
-
-spa_auto_trim_t
-spa_get_auto_trim(spa_t *spa)
-{
-	return (spa->spa_auto_trim);
-}
-
 uint64_t
 dva_get_dsize_sync(spa_t *spa, const dva_t *dva)
 {
@@ -2304,20 +2292,20 @@ static void
 spa_trimstats_create(spa_t *spa)
 {
 	/* truncate pool name to accomodate "_trimstats" suffix */
-	char short_spa_name[KSTAT_STRLEN - 10];
 	char name[KSTAT_STRLEN];
+	int trunclen = MIN(sizeof (name) - sizeof ("_trim"),
+	    strlen(spa->spa_name));
 
 	ASSERT3P(spa->spa_trimstats, ==, NULL);
 	ASSERT3P(spa->spa_trimstats_ks, ==, NULL);
 
-	(void) snprintf(short_spa_name, sizeof (short_spa_name), "%s",
+	(void) snprintf(name, sizeof (name), "%.*s_trim", trunclen,
 	    spa->spa_name);
-	(void) snprintf(name, sizeof (name), "%s_trimstats", short_spa_name);
 
 	spa->spa_trimstats_ks = kstat_create("zfs", 0, name, "misc",
 	    KSTAT_TYPE_NAMED, sizeof (*spa->spa_trimstats) /
 	    sizeof (kstat_named_t), 0);
-	if (spa->spa_trimstats_ks) {
+	if (spa->spa_trimstats_ks != NULL) {
 		spa->spa_trimstats = spa->spa_trimstats_ks->ks_data;
 
 #ifdef _KERNEL
@@ -2346,7 +2334,7 @@ spa_trimstats_create(spa_t *spa)
 static void
 spa_trimstats_destroy(spa_t *spa)
 {
-	if (spa->spa_trimstats_ks) {
+	if (spa->spa_trimstats_ks != NULL) {
 		kstat_delete(spa->spa_trimstats_ks);
 		spa->spa_trimstats = NULL;
 		spa->spa_trimstats_ks = NULL;
@@ -2361,7 +2349,7 @@ spa_trimstats_update(spa_t *spa, uint64_t extents, uint64_t bytes,
     uint64_t extents_skipped, uint64_t bytes_skipped)
 {
 	spa_trimstats_t *st = spa->spa_trimstats;
-	if (st) {
+	if (st != NULL) {
 		atomic_add_64(&st->st_extents.value.ui64, extents);
 		atomic_add_64(&st->st_bytes.value.ui64, bytes);
 		atomic_add_64(&st->st_extents_skipped.value.ui64,
@@ -2378,7 +2366,7 @@ void
 spa_trimstats_auto_slow_incr(spa_t *spa)
 {
 	spa_trimstats_t *st = spa->spa_trimstats;
-	if (st)
+	if (st != NULL)
 		atomic_inc_64(&st->st_auto_slow.value.ui64);
 }
 
@@ -2391,9 +2379,14 @@ void
 spa_auto_trim_taskq_create(spa_t *spa)
 {
 	char name[MAXPATHLEN];
+
+	int trunclen = MIN(sizeof (name) - sizeof ("_auto_trim"),
+	    strlen(spa->spa_name));
+
 	ASSERT(MUTEX_HELD(&spa->spa_auto_trim_lock));
 	ASSERT(spa->spa_auto_trim_taskq == NULL);
-	(void) snprintf(name, sizeof (name), "%s_auto_trim", spa->spa_name);
+	(void) snprintf(name, sizeof (name), "%.*s_auto_trim", trunclen,
+	    spa->spa_name);
 	spa->spa_auto_trim_taskq = taskq_create(name,
 	    zfs_auto_trim_taskq_batch_pct, minclsyspri, 1, INT_MAX,
 	    TASKQ_THREADS_CPU_PCT);
@@ -2409,15 +2402,21 @@ void
 spa_man_trim_taskq_create(spa_t *spa)
 {
 	char name[MAXPATHLEN];
+
+	int trunclen = MIN(sizeof (name) - sizeof ("_man_trim"),
+	    strlen(spa->spa_name));
+
 	ASSERT(MUTEX_HELD(&spa->spa_man_trim_lock));
 	spa_async_unrequest(spa, SPA_ASYNC_MAN_TRIM_TASKQ_DESTROY);
-	if (spa->spa_man_trim_taskq != NULL)
+	if (spa->spa_man_trim_taskq != NULL) {
 		/*
 		 * The async taskq destroy has been pre-empted, so just
 		 * return, the taskq is still good to use.
 		 */
 		return;
-	(void) snprintf(name, sizeof (name), "%s_man_trim", spa->spa_name);
+	}
+	(void) snprintf(name, sizeof (name), "%.*s_man_trim", trunclen,
+	    spa->spa_name);
 	spa->spa_man_trim_taskq = taskq_create(name,
 	    spa->spa_root_vdev->vdev_children, minclsyspri,
 	    spa->spa_root_vdev->vdev_children,

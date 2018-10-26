@@ -2788,7 +2788,6 @@ vdev_raidz_trim(vdev_t *vd, zio_t *pio, dkioc_free_list_t *dfl,
 		sub_dfls[i]->dfl_num_exts = dfl->dfl_num_exts;
 		sub_dfls[i]->dfl_flags = dfl->dfl_flags;
 		sub_dfls[i]->dfl_offset = dfl->dfl_offset;
-		/* don't copy the check func, because it isn't raidz-aware */
 	}
 
 	/*
@@ -2844,6 +2843,6 @@ vdev_ops_t vdev_raidz_ops = {
 	.vdev_op_remap =	NULL,
 	.vdev_op_xlate =	vdev_raidz_xlate,
 	.vdev_op_trim =		vdev_raidz_trim,
-	.vdev_op_type =		VDEV_TYPE_RAIDZ, /* name of this vdev type */
-	.vdev_op_leaf =		B_FALSE		/* not a leaf vdev */
+	.vdev_op_type =		VDEV_TYPE_RAIDZ,
+	.vdev_op_leaf =		B_FALSE
 };

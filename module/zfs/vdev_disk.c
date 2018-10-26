@@ -28,6 +28,7 @@
 
 #include <sys/zfs_context.h>
 #include <sys/spa.h>
+#include <sys/spa_impl.h>
 #include <sys/vdev_disk.h>
 #include <sys/vdev_impl.h>
 #include <sys/abd.h>
@@ -817,7 +818,7 @@ vdev_disk_io_start(zio_t *zio)
 			 * is guaranteed to be operating a leaf disk vdev.
 			 */
 			if (vd->vdev_notrim &&
-			    spa_get_force_trim(vd->vdev_spa) !=
+				vd->vdev_spa->spa_force_trim !=
 			    SPA_FORCE_TRIM_ON) {
 				zio->io_error = SET_ERROR(ENOTSUP);
 				break;
@@ -830,9 +831,6 @@ vdev_disk_io_start(zio_t *zio)
 			ASSERT(zio->io_dfl != NULL);
 			error = ldi_ioctl(dvd->vd_lh, zio->io_cmd,
 			    (uintptr_t)zio->io_dfl, FKIOCTL, kcred, NULL);
-
-			if (error == ENOTSUP || error == ENOTTY)
-				vd->vdev_notrim = B_TRUE;
 			zio->io_error = error;
 
 			break;
@@ -1007,8 +1005,8 @@ vdev_ops_t vdev_disk_ops = {
 	.vdev_op_remap =	NULL,
 	.vdev_op_xlate =	vdev_default_xlate,
 	.vdev_op_trim =		NULL,
-	.vdev_op_type =		VDEV_TYPE_DISK,	/* name of this vdev type */
-	.vdev_op_leaf =		B_TRUE		/* leaf vdev */
+	.vdev_op_type =		VDEV_TYPE_DISK,
+	.vdev_op_leaf =		B_TRUE
 };
 
 /*

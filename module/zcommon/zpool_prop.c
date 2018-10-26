@@ -23,6 +23,7 @@
  * Copyright 2017 Nexenta Systems, Inc. All rights reserved.
  * Copyright (c) 2012, 2017 by Delphix. All rights reserved.
  * Copyright (c) 2014 Integros [integros.com]
+ * Copyright 2018 Joyent, Inc.
  */
 
 #include <sys/zio.h>
@@ -126,16 +127,17 @@ zpool_prop_init(void)
 	zprop_register_index(ZPOOL_PROP_READONLY, "readonly", 0,
 	    PROP_DEFAULT, ZFS_TYPE_POOL, "on | off", "RDONLY", boolean_table);
 
-	/* default index properties */
-	zprop_register_index(ZPOOL_PROP_FAILUREMODE, "failmode",
-	    ZIO_FAILURE_MODE_WAIT, PROP_DEFAULT, ZFS_TYPE_POOL,
-	    "wait | continue | panic", "FAILMODE", failuremode_table);
 	zprop_register_index(ZPOOL_PROP_FORCETRIM, "forcetrim",
 	    SPA_FORCE_TRIM_OFF, PROP_DEFAULT, ZFS_TYPE_POOL,
 	    "on | off", "FORCETRIM", boolean_table);
 	zprop_register_index(ZPOOL_PROP_AUTOTRIM, "autotrim",
 	    SPA_AUTO_TRIM_OFF, PROP_DEFAULT, ZFS_TYPE_POOL,
 	    "on | off", "AUTOTRIM", boolean_table);
+
+	/* default index properties */
+	zprop_register_index(ZPOOL_PROP_FAILUREMODE, "failmode",
+	    ZIO_FAILURE_MODE_WAIT, PROP_DEFAULT, ZFS_TYPE_POOL,
+	    "wait | continue | panic", "FAILMODE", failuremode_table);
 
 	/* hidden properties */
 	zprop_register_hidden(ZPOOL_PROP_NAME, "name", PROP_TYPE_STRING,

@@ -476,7 +476,6 @@ spa_config_generate(spa_t *spa, vdev_t *vd, uint64_t txg, int getstats)
 	fnvlist_add_nvlist(config, ZPOOL_CONFIG_VDEV_TREE, nvroot);
 	nvlist_free(nvroot);
 
-	/* If we're getting stats, calculate trim progress from leaf vdevs. */
 	if (getstats) {
 		uint64_t prog, rate, start_time, stop_time;
 

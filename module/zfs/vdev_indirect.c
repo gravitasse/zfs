@@ -1633,6 +1633,6 @@ vdev_ops_t vdev_indirect_ops = {
 	.vdev_op_remap =	vdev_indirect_remap,
 	.vdev_op_xlate =	NULL,
 	.vdev_op_trim =		NULL,
-	.vdev_op_type =		VDEV_TYPE_INDIRECT, /* name of this vdev type */
-	.vdev_op_leaf =		B_FALSE		/* not a leaf vdev */
+	.vdev_op_type =		VDEV_TYPE_INDIRECT,
+	.vdev_op_leaf =		B_FALSE
 };

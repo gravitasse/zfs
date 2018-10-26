@@ -52,6 +52,7 @@
 #include <sys/zfs_context.h>
 #include <sys/abd.h>
 #include <sys/vdev_initialize.h>
+#include <sys/callb.h>
 
 /*
  * Virtual device management.
@@ -185,6 +186,34 @@ vdev_dbgmsg_print_tree(vdev_t *vd, int indent)
  * without queueing them.
  */
 uint64_t zfs_trim_mem_lim_fact = 50;
+
+/*
+ * How many TXG's worth of updates should be aggregated per TRIM/UNMAP
+ * issued to the underlying vdev. We keep two range trees of extents
+ * (called "trim sets") to be trimmed per metaslab, the `current' and
+ * the `previous' TS. New free's are added to the current TS. Then,
+ * once `zfs_txgs_per_trim' transactions have elapsed, the `current'
+ * TS becomes the `previous' TS and a new, blank TS is created to be
+ * the new `current', which will then start accumulating any new frees.
+ * Once another zfs_txgs_per_trim TXGs have passed, the previous TS's
+ * extents are trimmed, the TS is destroyed and the current TS again
+ * becomes the previous TS.
+ * This serves to fulfill two functions: aggregate many small frees
+ * into fewer larger trim operations (which should help with devices
+ * which do not take so kindly to them) and to allow for disaster
+ * recovery (extents won't get trimmed immediately, but instead only
+ * after passing this rather long timeout, thus preserving
+ * 'zfs import -F' functionality).
+ * The exact default value of this tunable is a tradeoff between:
+ * 1) Keeping the trim commands reasonably small.
+ * 2) Keeping the ability to rollback back for as many txgs as possible.
+ * 3) Waiting around too long that the user starts to get uneasy about not
+ *	seeing any space being freed after they remove some files.
+ * The default value of 32 is the maximum number of uberblocks in a vdev
+ * label, assuming a 4k physical sector size (which seems to be the almost
+ * universal smallest sector size used in SSDs).
+ */
+unsigned int zfs_txgs_per_trim = 32;
 
 /*
  * Given a vdev type, return the appropriate ops vector.
@@ -2932,11 +2961,11 @@ vdev_destroy_spacemaps(vdev_t *vd, dmu_tx_t *tx)
 }
 
 static void
-vdev_remove_empty(vdev_t *vd, uint64_t txg)
+vdev_remove_empty_log(vdev_t *vd, uint64_t txg)
 {
 	spa_t *spa = vd->vdev_spa;
-	dmu_tx_t *tx;
 	int m, i;
+	ASSERT(vd->vdev_islog);
 
 	ASSERT(vd == vd->vdev_top);
 	ASSERT3U(txg, ==, spa_syncing_txg(spa));
@@ -2981,10 +3010,10 @@ vdev_remove_empty(vdev_t *vd, uint64_t txg)
 			ASSERT0(mg->mg_histogram[i]);
 	}
 
-	tx = dmu_tx_create_assigned(spa_get_dsl(spa), txg);
+	dmu_tx_t *tx = dmu_tx_create_assigned(spa_get_dsl(spa), txg);
 	vdev_destroy_spacemaps(vd, tx);
 
-	if (vd->vdev_islog && vd->vdev_top_zap != 0) {
+	if (vd->vdev_top_zap != 0) {
 		vdev_destroy_unlink_zap(vd, vd->vdev_top_zap, tx);
 		vd->vdev_top_zap = 0;
 	}
@@ -3059,14 +3088,11 @@ vdev_sync(vdev_t *vd, uint64_t txg)
 		vdev_dtl_sync(lvd, txg);
 
 	/*
-	 * Remove the metadata associated with this vdev once it's empty.
-	 * Note that this is typically used for log/cache device removal;
-	 * we don't empty toplevel vdevs when removing them.  But if
-	 * a toplevel happens to be emptied, this is not harmful.
+	 * If this is an empty log device being removed, destroy the
+	 * metadata associated with it.
 	 */
-	if (vd->vdev_stat.vs_alloc == 0 && vd->vdev_removing) {
-		vdev_remove_empty(vd, txg);
-	}
+	if (vd->vdev_islog && vd->vdev_stat.vs_alloc == 0 && vd->vdev_removing)
+		vdev_remove_empty_log(vd, txg);
 
 	(void) txg_list_add(&spa->spa_vdev_txg_list, vd, TXG_CLEAN(txg));
 }
@@ -4397,9 +4423,10 @@ vdev_deadman(vdev_t *vd)
 void
 vdev_man_trim(vdev_trim_info_t *vti)
 {
-	clock_t t = ddi_get_lbolt();
+	hrtime_t t = gethrtime();
 	spa_t *spa = vti->vti_vdev->vdev_spa;
 	vdev_t *vd = vti->vti_vdev;
+	uint64_t ms_count;
 	uint64_t i, cursor;
 	boolean_t was_loaded = B_FALSE;
 
@@ -4407,20 +4434,23 @@ vdev_man_trim(vdev_trim_info_t *vti)
 	vd->vdev_trim_prog = 0;
 
 	spa_config_enter(spa, SCL_STATE_ALL, FTAG, RW_READER);
+
+	ms_count = vd->vdev_ms_count;
+	spa_config_exit(spa, SCL_STATE_ALL, FTAG);
+
 	ASSERT(vd->vdev_ms[0] != NULL);
 	cursor = vd->vdev_ms[0]->ms_start;
 	i = 0;
-	while (i < vti->vti_vdev->vdev_ms_count && !spa->spa_man_trim_stop) {
+	while (i < ms_count && !spa->spa_man_trim_stop) {
 		uint64_t delta;
 		metaslab_t *msp = vd->vdev_ms[i];
 		zio_t *trim_io;
 
 		trim_io = metaslab_trim_all(msp, &cursor, &delta, &was_loaded);
-		spa_config_exit(spa, SCL_STATE_ALL, FTAG);
 
 		if (trim_io != NULL) {
 			ASSERT3U(cursor, >=, vd->vdev_ms[0]->ms_start);
-			vd->vdev_trim_prog = cursor - vd->vdev_ms[0]->ms_start;
+			vd->vdev_trim_prog += delta;
 			(void) zio_wait(trim_io);
 		} else {
 			/*
@@ -4436,19 +4466,20 @@ vdev_man_trim(vdev_trim_info_t *vti)
 		/* delay loop to handle fixed-rate trimming */
 		for (;;) {
 			uint64_t rate = spa->spa_man_trim_rate;
-			uint64_t sleep_delay;
-			clock_t t1;
+			hrtime_t sleep_delay;
+			hrtime_t t1;
 
 			if (rate == 0) {
 				/* No delay, just update 't' and move on. */
-				t = ddi_get_lbolt();
+				t = gethrtime();
 				break;
 			}
 
-			sleep_delay = (delta * hz) / rate;
+			sleep_delay = SEC2NSEC(delta) / rate;
 			mutex_enter(&spa->spa_man_trim_lock);
-			t1 = cv_timedwait(&spa->spa_man_trim_update_cv,
-			    &spa->spa_man_trim_lock, t + sleep_delay);
+			t1 = cv_timedwait_hires(&spa->spa_man_trim_update_cv,
+			    &spa->spa_man_trim_lock, t + sleep_delay,
+			    MSEC2NSEC(500), CALLOUT_FLAG_ABSOLUTE);
 			mutex_exit(&spa->spa_man_trim_lock);
 
 			/* If interrupted, don't try to relock, get out */
@@ -4461,17 +4492,9 @@ vdev_man_trim(vdev_trim_info_t *vti)
 				break;
 			}
 		}
-		spa_config_enter(spa, SCL_STATE_ALL, FTAG, RW_READER);
 	}
-	spa_config_exit(spa, SCL_STATE_ALL, FTAG);
+
 out:
-	/*
-	 * Ensure we're marked as "completed" even if we've had to stop
-	 * before processing all metaslabs.
-	 */
-	mutex_enter(&vd->vdev_stat_lock);
-	vd->vdev_trim_prog = vd->vdev_stat.vs_space;
-	mutex_exit(&vd->vdev_stat_lock);
 	vd->vdev_man_trimming = B_FALSE;
 
 	ASSERT(vti->vti_done_cb != NULL);
@@ -4489,25 +4512,42 @@ vdev_auto_trim(vdev_trim_info_t *vti)
 	vdev_t *vd = vti->vti_vdev;
 	spa_t *spa = vd->vdev_spa;
 	uint64_t txg = vti->vti_txg;
+	uint64_t txgs_per_trim = zfs_txgs_per_trim;
 	uint64_t mlim = 0, mused = 0;
-	boolean_t limited;
+	uint64_t ms_count = vd->vdev_ms_count;
+	boolean_t preserve_spilled;
 
 	ASSERT3P(vd->vdev_top, ==, vd);
 
 	if (vd->vdev_man_trimming)
 		goto out;
 
-	spa_config_enter(spa, SCL_STATE_ALL, FTAG, RW_READER);
-	for (uint64_t i = 0; i < vd->vdev_ms_count; i++)
+	/*
+	 * In case trimming is slow and the previous trim run has no yet
+	 * finished, we order metaslab_auto_trim to keep the extents that
+	 * were about to be trimmed so that they can be trimmed in a future
+	 * autotrim run. But we only do so if the amount of memory consumed
+	 * by the extents doesn't exceed a threshold, otherwise we drop them.
+	 */
+	for (uint64_t i = 0; i < ms_count; i++)
 		mused += metaslab_trim_mem_used(vd->vdev_ms[i]);
 	mlim = (physmem * PAGESIZE) / (zfs_trim_mem_lim_fact *
 	    spa->spa_root_vdev->vdev_children);
-	limited = mused > mlim;
+	preserve_spilled = mused < mlim;
 	DTRACE_PROBE3(autotrim__mem__lim, vdev_t *, vd, uint64_t, mused,
 	    uint64_t, mlim);
-	for (uint64_t i = 0; i < vd->vdev_ms_count; i++)
-		metaslab_auto_trim(vd->vdev_ms[i], txg, !limited);
-	spa_config_exit(spa, SCL_STATE_ALL, FTAG);
+
+	/*
+	 * Since we typically have hundreds of metaslabs per vdev, but we only
+	 * trim them once every zfs_txgs_per_trim txgs, it'd be best if we
+	 * could sequence the TRIM commands from all metaslabs so that they
+	 * don't all always pound the device in the same txg. We do so taking
+	 * the txg number modulo txgs_per_trim and then skipping by
+	 * txgs_per_trim. Thus, for the default 200 metaslabs and 32
+	 * txgs_per_trim, we'll only be trimming ~6.25 metaslabs per txg.
+	 */
+	for (uint64_t i = txg % txgs_per_trim; i < ms_count; i += txgs_per_trim)
+		metaslab_auto_trim(vd->vdev_ms[i], preserve_spilled);
 
 out:
 	ASSERT(vti->vti_done_cb != NULL);
@@ -4525,6 +4565,16 @@ trim_stop_set(vdev_t *vd, boolean_t flag)
 
 	for (uint64_t i = 0; i < vd->vdev_children; i++)
 		trim_stop_set(vd->vdev_child[i], flag);
+}
+
+/*
+ * Returns true if a management operation (such as attach/add) is trying to
+ * grab this vdev and therefore any ongoing trims should be canceled.
+ */
+boolean_t
+vdev_trim_should_stop(vdev_t *vd)
+{
+	return (vd->vdev_trim_zios_stop);
 }
 
 static void

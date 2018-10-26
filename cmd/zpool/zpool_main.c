@@ -26,6 +26,7 @@
  * Copyright (c) 2012 by Frederik Wessels. All rights reserved.
  * Copyright (c) 2012 by Cyril Plisko. All rights reserved.
  * Copyright (c) 2013 by Prasad Joshi (sTec). All rights reserved.
+ * Copyright (c) 2018 Joyent, Inc. All rights reserved.
  * Copyright 2017 Nexenta Systems, Inc.
  * Copyright (c) 2017 Datto Inc.
  */
@@ -363,7 +364,7 @@ get_usage(zpool_help_t idx) {
 	case HELP_SCRUB:
 		return (gettext("\tscrub [-s | -p] <pool> ...\n"));
 	case HELP_TRIM:
-		return (gettext("\ttrim [-s|-r <rate>] <pool> ...\n"));
+		return (gettext("\ttrim [-s |-r <rate>] <pool> ...\n"));
 	case HELP_STATUS:
 		return (gettext("\tstatus [-gLPvxD] [-T d|u] [pool] ... "
 		    "[interval [count]]\n"));
@@ -5734,31 +5735,6 @@ scrub_callback(zpool_handle_t *zhp, void *data)
 	return (err != 0);
 }
 
-typedef struct trim_cbdata {
-	boolean_t	cb_start;
-	uint64_t	cb_rate;
-} trim_cbdata_t;
-
-int
-trim_callback(zpool_handle_t *zhp, void *data)
-{
-	trim_cbdata_t *cb = data;
-	int err;
-
-	/*
-	 * Ignore faulted pools.
-	 */
-	if (zpool_get_state(zhp) == POOL_STATE_UNAVAIL) {
-		(void) fprintf(stderr, gettext("cannot trim '%s': pool is "
-		    "currently unavailable\n"), zpool_get_name(zhp));
-		return (1);
-	}
-
-	err = zpool_trim(zhp, cb->cb_start, cb->cb_rate);
-
-	return (err != 0);
-}
-
 /*
  * zpool scrub [-s | -p] <pool> ...
  *
@@ -5923,11 +5899,37 @@ zpool_do_initialize(int argc, char **argv)
 	return (err);
 }
 
+typedef struct trim_cbdata {
+	boolean_t	cb_start;
+	uint64_t	cb_rate;
+} trim_cbdata_t;
+
+int
+trim_callback(zpool_handle_t *zhp, void *data)
+{
+	trim_cbdata_t *cb = data;
+	int err;
+
+	/*
+	 * Ignore faulted pools.
+	 */
+	if (zpool_get_state(zhp) == POOL_STATE_UNAVAIL) {
+		(void) fprintf(stderr, gettext("cannot trim '%s': pool is "
+		    "currently unavailable\n"), zpool_get_name(zhp));
+		return (1);
+	}
+
+	err = zpool_trim(zhp, cb->cb_start, cb->cb_rate);
+
+	return (err != 0);
+}
+
 /*
  * zpool trim [-s|-r <rate>] <pool> ...
  *
  *	-s		Stop. Stops any in-progress trim.
- *	-r <rate>	Sets the TRIM rate.
+ *	-r <rate>	Sets the TRIM rate in bytes (per second). Supports
+ *			adding a multiplier suffix such as 'k' or 'm'.
  */
 int
 zpool_do_trim(int argc, char **argv)
@@ -6308,7 +6310,6 @@ print_trim_status(uint64_t trim_prog, uint64_t total_size, uint64_t rate,
 	time_t start_time = start_time_u64, end_time = end_time_u64;
 	char *buf;
 
-	assert(trim_prog <= total_size);
 	if (trim_prog != 0 && trim_prog != total_size) {
 		buf = ctime(&start_time);
 		buf[strlen(buf) - 1] = '\0';	/* strip trailing newline */
@@ -6316,12 +6317,12 @@ print_trim_status(uint64_t trim_prog, uint64_t total_size, uint64_t rate,
 			char rate_str[32];
 			zfs_nicenum(rate, rate_str, sizeof (rate_str));
 			(void) printf("  trim: %.02f%%\tstarted: %s\t"
-			    "(rate: %s/s)\n", (((double)trim_prog) /
-			    total_size) * 100, buf, rate_str);
+			    "(rate limit: %s/s)\n", MIN((((double)trim_prog) /
+			    total_size) * 100, 100), buf, rate_str);
 		} else {
 			(void) printf("  trim: %.02f%%\tstarted: %s\t"
-			    "(rate: max)\n", (((double)trim_prog) /
-			    total_size) * 100, buf);
+			    "(rate limit: none)\n", MIN((((double)trim_prog) /
+			    total_size) * 100, 100), buf);
 		}
 	} else {
 		if (start_time != 0) {
@@ -6832,8 +6833,8 @@ status_callback(zpool_handle_t *zhp, void *data)
 			 * For whatever reason, root vdev_stats_t don't
 			 * include log devices.
 			 */
-			print_trim_status(trim_prog, vs->vs_space +
-			    zpool_slog_space(nvroot), trim_rate,
+			print_trim_status(trim_prog, (vs->vs_space -
+			    vs->vs_alloc) + zpool_slog_space(nvroot), trim_rate,
 			    trim_start_time, trim_stop_time);
 		}
 
