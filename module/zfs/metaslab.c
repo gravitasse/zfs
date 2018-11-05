@@ -4723,11 +4723,11 @@ metaslab_exec_trim(metaslab_t *msp, boolean_t auto_trim)
 	 * we're manipulating ms_tree to remove the extents that we're
 	 * currently trimming. Metaslab condensing takes priority.
 	 */
-	while (msp->ms_trimming_ts != NULL && !vdev_trim_should_stop(vd))
+	while (msp->ms_condensing)
 		cv_wait(&msp->ms_condensing_cv, &msp->ms_lock);
 
 	/* wait for a preceding trim to finish */
-	while (msp->ms_trimming_ts != NULL)
+	while (msp->ms_trimming_ts != NULL && !vdev_trim_should_stop(vd))
 		cv_wait(&msp->ms_trim_cv, &msp->ms_lock);
 
 	/*
@@ -4756,6 +4756,14 @@ metaslab_exec_trim(metaslab_t *msp, boolean_t auto_trim)
 				    (void*)rs);
 			}
 #endif	/* DEBUG */
+			/*
+			 * To avoid allocating from the range of extents we're
+			 * currently destroying, temporarily remove them from
+			 * the tree of free space. They'll then be added back
+			 * in in metaslab_trim_done.
+			 */
+			range_tree_remove(msp->ms_allocatable, rs->rs_start,
+			    rs->rs_end - rs->rs_start);
 		}
 	}
 
